@@ -52,9 +52,38 @@ py -3.12 -m venv .venv
 
 Hashes cover UTF-8 text with LF line endings, so they do not depend on the platform or Git line-ending settings.
 
+## Deterministic navigation (Part 2)
+
+Navigation commands are resolved by application code before any model sees them, and only to semantic route IDs. No page paths or URLs exist yet, so none appear in the code or configuration.
+
+- `configs/routes.yaml`, loaded by `src/mascot_lab/routes.py`: the navigation allowlist. It routes the five featured projects by their IDs from the navigation registry in `knowledge/facts.md` (`project_qmind`, `project_ingenuity`, `project_satira`, `project_deeplense`, `project_website`), lists the aliases that name each one, and lists ambiguous terms (`project`, `research`) that name several. The schema has no place for a path or URL; unknown keys such as `url` are rejected. Aliases that normalize to the same text collide, and the file is rejected.
+- `src/mascot_lab/phrases.py`: the single normalization used for both aliases and messages. Letter case, accents, full-width forms, zero-width characters, punctuation, spacing, a possessive `'s`, and surrounding words such as "the", "page", or "project" do not matter; spelling does. A misspelling matches only if it is listed (`Ingenuity Labs`, `DeepLens`).
+- `src/mascot_lab/router.py`: `Router.route(message)` returns a `RouteResult` with a `status`, the `route_id` when routed, the `candidates` when ambiguous, and the configured phrases that matched. It never returns text from the message, a URL, or a path. When a router is built, it checks that every configured phrase routes as configured and fails closed otherwise.
+- `tests/test_routes.py` and `tests/test_router.py`: valid commands, spelling and case variants, near misses that must not match, alias collisions, ambiguous and unknown destinations, URL and path injection, result invariants, and a fixed-seed randomized safety check.
+
+| Status | Meaning |
+| --- | --- |
+| `routed` | A navigation command for exactly one allowlisted route. |
+| `ambiguous_destination` | The destination names several routes, as in "QMIND or Satira" or "the research project". |
+| `unknown_destination` | A navigation command whose destination is not allowlisted, as in "take me to the Papers page". |
+| `url_rejected` | A navigation command containing a URL, domain name, IP address, email address, or path. The allowlisted name `rastinaghighi.dev` is accepted only on its own. |
+| `not_navigation` | Not a direct navigation command; the message is left for the model. |
+
+Go commands such as "take me to", "go to", or "navigate to" always count as navigation. Show commands such as "show me", "open", or "visit" count only when the destination is allowlisted, contains a URL, or ends with a page word such as "page" or "website", so "show me what Satira does" stays a question for the model.
+
+```python
+from mascot_lab.router import Router
+
+router = Router.from_file()
+router.route("Can you take me to Q-MIND?")  # status routed, route_id 'project_qmind'
+router.route("take me to https://example.com")  # status url_rejected, no route_id
+```
+
+Configuration decisions, recorded in `configs/routes.yaml`: `mascot_chat` has no text alias, so it is not routable by command, and "build log" is not an alias of `project_website`.
+
 ## Status
 
-Foundation (Part 1) implemented with automated tests. Navigation routing, the Ollama adapter, the evaluation runner, and the evaluation cases are not implemented yet, and no model has been run through this code. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
+Foundation (Part 1) and deterministic navigation (Part 2) are implemented with automated tests. The Ollama adapter, the evaluation runner, and the evaluation cases are not implemented yet, and no model has been run through this code. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
 
 ## Repository policy
 

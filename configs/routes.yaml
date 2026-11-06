@@ -1,0 +1,58 @@
+# Mascot-Lab navigation allowlist: the only destinations the router returns.
+#
+# Each `id` is a semantic route ID from the navigation registry in
+# knowledge/facts.md. No page paths or URLs have been chosen for the website,
+# so this file holds none, and the schema rejects every key not used here,
+# including `url` and `path`. The website maps IDs to pages once they exist.
+#
+# Aliases match exactly after normalization, never by guessing. Letter case,
+# accents, full-width characters, punctuation, and spacing are ignored
+# ("Q-MIND", "q mind", and "QMIND" are one alias), as are leading words such
+# as "the", "this", "his", or "Rastin's" and trailing words such as "page",
+# "project", "section", "work", or "research". A misspelling matches only if
+# it is listed. Entries that normalize to the same text collide, and the
+# loader rejects the file.
+#
+# An ambiguous term names several routes and never selects one: the router
+# reports it as ambiguous, with its candidate routes.
+#
+# Configuration decisions for owner review:
+# - Only the five featured projects are routable by command. `mascot_chat`
+#   is in the registry but has no alias here; visitors reach the mascot's
+#   page by clicking the mascot or through the cloud's continuation link.
+# - "build log" is not an alias of project_website: the design plan (p. 9)
+#   plans build-log pages for more than one feature.
+# - "Ingenuity Labs" and "DeepLens" are listed spelling variants.
+
+schema_version: 1
+
+routes:
+  - id: project_qmind
+    aliases:
+      - QMIND
+      - QMIND mechanistic interpretability  # facts.md P01
+  - id: project_ingenuity
+    aliases:
+      - Ingenuity Lab
+      - Ingenuity Labs  # spelling variant
+      - Ingenuity
+      - AIIM Lab  # facts.md I01: AIIM Lab at Ingenuity Lab
+      - AIIM
+  - id: project_satira
+    aliases:
+      - Satira
+  - id: project_deeplense
+    aliases:
+      - DeepLense
+      - DeepLens  # spelling variant
+  - id: project_website
+    aliases:
+      - This website  # the design plan's label for the fifth featured project
+      - This site
+      - rastinaghighi.dev  # facts.md P01; accepted as a bare name, never inside a URL
+
+ambiguous_terms:
+  - term: project  # any of the five featured projects
+    routes: [project_qmind, project_ingenuity, project_satira, project_deeplense, project_website]
+  - term: research  # the QMIND project (Q01) and the Ingenuity Lab work (I01, I03)
+    routes: [project_qmind, project_ingenuity]
