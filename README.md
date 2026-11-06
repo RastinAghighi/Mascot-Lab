@@ -44,7 +44,7 @@ py -3.12 -m venv .venv
 
 ## Foundation (Part 1)
 
-- `configs/models.yaml`, loaded by `src/mascot_lab/config.py`: the six exact Ollama tags and one shared option baseline (`num_ctx: 4096`). A model may differ from the baseline only through an `overrides` block with a written `reason`; prompts and knowledge cannot be set per model. Documented exceptions: none.
+- `configs/models.yaml`, loaded by `src/mascot_lab/config.py`: the six exact Ollama tags and one shared baseline (its current settings are listed under Part 3). A model may differ from the baseline only through an `overrides` block with a written `reason`; prompts and knowledge cannot be set per model. Documented exceptions: none.
 - `prompts/system.md`: the one system instruction shared by all six models. Its `{{MASCOT_KNOWLEDGE}}` placeholder is replaced with the knowledge block. It asks for grounded answers of about three short lines; it is not a security control.
 - `src/mascot_lab/knowledge.py`: returns only the text between the `<!-- BEGIN MASCOT KNOWLEDGE -->` and `<!-- END MASCOT KNOWLEDGE -->` lines of `knowledge/facts.md`, fails closed on missing, duplicated, out-of-order, malformed, or empty boundaries, and records the block's SHA-256.
 - `src/mascot_lab/prompt.py`: builds identical system and user messages for every model and records the SHA-256 of the instruction, the knowledge block, and the assembled system message.
@@ -81,9 +81,92 @@ router.route("take me to https://example.com")  # status url_rejected, no route_
 
 Configuration decisions, recorded in `configs/routes.yaml`: `mascot_chat` has no text alias, so it is not routable by command, and "build log" is not an alias of `project_website`.
 
+## Shared chat engine (Part 3)
+
+One engine handles a message for any of the six models, in a fixed order, and stops at the first step that settles it:
+
+1. **Input validation**: line endings become LF; control characters other than line breaks and tabs, and invisible format characters (zero-width spaces, bidirectional controls, Unicode tag characters) are removed; surrounding whitespace is trimmed. An empty message, or one longer than `input.max_characters`, is refused.
+2. **Deterministic routing**: the Part 2 router. Navigation commands are answered by the application, never by a model.
+3. **Approved knowledge loading**: the bounded knowledge block is read from `knowledge/facts.md` for every request that reaches this step, so an edited fact applies to the next request.
+4. **Shared prompt construction**: the Part 1 prompt builder, identical for every model.
+5. **Ollama request**: one `POST /api/chat` with the model's exact tag, the messages, `think`, and the configured options.
+6. **Output validation**: the display text is derived from the raw answer, which is kept unchanged.
+
+Files:
+
+- `src/mascot_lab/engine.py`: `ChatEngine` and the structured `ChatResponse`.
+- `src/mascot_lab/ollama.py`: the single Ollama adapter (standard library only). It sends non-streamed requests only to a loopback address, because the prompts carry the private knowledge block. It ignores proxies configured in the environment, never follows redirects, limits response size, and rejects option names it does not know: Ollama ignores unknown options with only a server-side warning, so a misspelled option would otherwise silently fall back to the model's default.
+- `src/mascot_lab/output.py`: output validation and the cloud preview.
+- `src/mascot_lab/chat_config.py` and `configs/chat.yaml`: the input limit, the cloud approximation, the continuation route, reply labels, and fixed replies, validated as strictly as the other configuration files.
+- `src/mascot_lab/cli.py`: the command line.
+
+### Responses
+
+A `ChatResponse` holds what a visitor would see and, separately, the record of what ran:
+
+| Field | Content |
+| --- | --- |
+| `answer_text` | The validated model answer, or a fixed reply from `configs/chat.yaml`. Plain text. |
+| `cloud_preview` | The start of `answer_text` that fits about 3 short lines, cut at a word with an ellipsis when it runs over. |
+| `continuation` | Set when the answer runs past the preview (`exceeds_cloud`) or was cut at the output limit (`output_limit_reached`). It points to `mascot_chat`, the mascot's page, for the design plan's "continue on the mascot's page" link (p. 7). |
+| `actions` | Semantic navigation actions, only from the router's allowlist: `navigate` for a direct request such as "show me Satira", which goes straight to the page, and `suggest`, one per candidate, for an ambiguous destination (the design plan's "take me there" button, p. 7). |
+| `output` | The raw model output, unmodified: `content`, separate `thinking`, `done_reason`, and Ollama's reported counts and durations, plus the client-measured `elapsed_ms`. |
+| `output_issues` | What output validation found or changed. |
+| `error` | Why no usable answer was produced. Its message is for records and is never shown. |
+| `message`, `route`, `prompt`, `request`, `configs` | The validated message, the router's result, the prompt hashes, the request settings, and the SHA-256 of each configuration file. |
+
+| Status | Meaning | Model called |
+| --- | --- | --- |
+| `answered` | The model's validated answer. | Yes |
+| `routed`, `ambiguous_destination`, `unknown_destination`, `url_rejected` | A navigation command, answered with a fixed reply. | No |
+| `invalid_input` | Empty or too long (`error.code` `empty_input` or `input_too_long`). | No |
+| `withheld` | The answer copied the instruction; the fixed `withheld` reply is shown instead. | Yes |
+| `error` | `knowledge_unavailable`, `model_not_found`, `ollama_unavailable`, `timeout`, `ollama_error`, `invalid_response`, or `empty_output`. The fixed `unavailable` reply is shown. | Depends |
+
+Nothing a model writes can navigate or add a link: actions come only from the router and the continuation route only from `configs/chat.yaml`. Output validation also removes hidden reasoning (`<think>` blocks), links and contact details (URLs, `www.` hosts, email and IP addresses, social media handles, phone numbers, paths, Markdown and HTML links, and domain names absent from the approved knowledge, so `rastinaghighi.dev` and `Three.js` stay as plain text), and Markdown or HTML formatting. It withholds an answer that copies 12 or more consecutive words of the instruction. It detects verbatim copies only, not paraphrases, and it is not a guarantee against prompt injection.
+
+### Command line
+
+From the repository root in Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m mascot_lab validate
+.\.venv\Scripts\python.exe -m mascot_lab route "take me to QMIND"
+.\.venv\Scripts\python.exe -m mascot_lab chat --model granite4:micro-h --dry-run "Where does Rastin study?"
+```
+
+- `validate` checks every configuration file, the instruction, and the knowledge block, and prints their hashes. It does not contact Ollama. `validate --ollama` also reads each configured model's metadata from the local server (`/api/show`): whether it is installed, its capabilities (including `thinking`), and its Modelfile parameters. No model is run.
+- `route` runs input validation and routing only and prints JSON.
+- `chat --model TAG_OR_NAME` sends one message to one configured model and prints the response as JSON. `--dry-run` prints the exact request instead of sending it, and `--show-prompt` includes the full system message. `--ollama-url` (loopback only) and `--timeout` (default 120 seconds) set the connection.
+
+Exit status: 0 on success, 1 when a request fails or a configured model is not installed, 2 for invalid configuration or arguments.
+
+### Configuration exceptions and known incompatibilities
+
+The shared baseline in `configs/models.yaml`, set by the owner for Part 3: `num_ctx` 4096, `temperature` 0.0, `seed` 42, `top_p` 1.0, `num_predict` 160, and `think: false`. No model has an override.
+
+- `think` is Ollama's top-level request field, not an option, so the configuration schema now has a `baseline.think` key. It is sent to all six models. For a model without Ollama's thinking capability there is no thinking mode to switch off, so the field is expected to change nothing; this has not been verified against the installed Ollama version. Which of the six report the capability has not been checked yet: `validate --ollama` lists it. Reasoning that a model returns anyway, in Ollama's `thinking` field or in `<think>` tags, is kept in the raw output, never displayed, and flagged (`thinking_returned`, `thinking_removed`). If Ollama rejects `think` for a model, the request fails with `ollama_error`; a per-model exception for `think` would then be needed, which the `overrides` schema does not support yet.
+- Options outside the baseline (for example `top_k`, `min_p`, `repeat_penalty`, and stop sequences) come from each model's Modelfile and Ollama's defaults, so they can differ between models. `validate --ollama` prints each model's Modelfile parameters. Whether any of them changes greedy decoding (a repeat penalty, for example) is not verified here.
+- With `temperature` 0.0 decoding is greedy, so the seed does not change the chosen tokens; it is set for completeness. Identical settings do not guarantee identical outputs across runs; repeated runs measure variability (handoff, section 5).
+- Gemma's published chat format has only user and model turns. How Ollama's templates for the two Gemma tags present the shared system message has not been checked (`ollama show <tag> --template`).
+- Requests are not streamed, so time to first token is not measured; the planned website streams answers (design plan, pp. 6 and 9). Counts and durations are recorded only as Ollama reports them; missing values stay empty.
+- The system message is 7,670 characters. Its token count depends on each model's tokenizer and has not been measured. Ollama reports `prompt_eval_count` per request.
+
+### Provisional values awaiting owner approval
+
+The design plan does not fix these, so `configs/chat.yaml` marks them provisional:
+
+- The input limit of 1,000 characters (the input cloud grows to about 3 small lines, then scrolls, p. 7).
+- The cloud approximation of 3 lines of 45 characters. Pixel fit must still be checked visually once the cloud exists.
+- The route labels and the wording of every fixed reply, including the `(link removed)` placeholder.
+- Offering one `suggest` action per candidate for an ambiguous destination.
+- Model answers carry no `suggest` action yet. The design plan lets a reply carry a "take me there" button but does not say when.
+
+Off-topic filtering, rate limits, and the other planned safeguards come after the model is chosen (design plan, p. 8) and are not part of this engine.
+
 ## Status
 
-Foundation (Part 1) and deterministic navigation (Part 2) are implemented with automated tests. The Ollama adapter, the evaluation runner, and the evaluation cases are not implemented yet, and no model has been run through this code. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
+Foundation (Part 1), deterministic navigation (Part 2), and the shared chat engine (Part 3) are implemented with automated tests. The chat engine has been tested only with mocked Ollama responses: no model has been run through this code. The evaluation runner, the evaluation cases, and the results recorder are not implemented yet. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
 
 ## Repository policy
 

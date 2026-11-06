@@ -1,0 +1,52 @@
+# Mascot-Lab chat engine configuration, shared by every model.
+#
+# The design plan (November 4, 2026, p. 7) fixes the behavior: the cloud
+# shows the latest question and answer, answers aim for about 3 short lines,
+# a long answer ends with a "continue on the mascot's page" link, and a
+# direct request such as "show me Satira" goes straight to the page.
+#
+# Values marked PROVISIONAL are not fixed by the design plan and await owner
+# approval. Labels and replies are plain single-line text: the schema
+# rejects URLs, addresses, and paths, and unknown keys at every level.
+
+schema_version: 1
+
+input:
+  # PROVISIONAL. Longest accepted message, in characters, after surrounding
+  # whitespace is trimmed. The design plan sets no limit: the input cloud
+  # grows to about 3 small lines, then scrolls (p. 7).
+  max_characters: 1000
+
+cloud:
+  # PROVISIONAL. Text-level approximation of "about 3 short lines" (p. 7).
+  # The real fit depends on the cloud's width and font, so it must still be
+  # checked visually once the cloud exists.
+  max_lines: 3
+  line_characters: 45
+
+# The semantic route of the mascot's page (knowledge/facts.md, navigation
+# registry), where a long answer continues (p. 7).
+continuation_route: mascot_chat
+
+# PROVISIONAL. The name used in replies for each route in configs/routes.yaml.
+route_labels:
+  project_qmind: QMIND
+  project_ingenuity: Ingenuity Lab
+  project_satira: Satira
+  project_deeplense: DeepLense
+  project_website: the website project
+
+# PROVISIONAL wording. Fixed replies for outcomes the application handles
+# without a model. `routed` must contain {label} once and
+# `ambiguous_destination` must contain {labels} once; the rest take no
+# placeholders. `link_removed` replaces a link removed from a model answer.
+replies:
+  routed: Taking you to {label}.
+  ambiguous_destination: Which one do you mean, {labels}?
+  unknown_destination: I can't take you there, but I can open any of Rastin's five featured projects.
+  url_rejected: I can't open web addresses, but I can take you to Rastin's featured projects.
+  empty_input: Please type a question about Rastin.
+  input_too_long: That message is too long. Please ask a shorter question about Rastin.
+  unavailable: Sorry, I can't answer right now. Please try again later.
+  withheld: Sorry, I can't share that. Please ask something else about Rastin.
+  link_removed: (link removed)

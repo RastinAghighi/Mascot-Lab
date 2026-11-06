@@ -1,10 +1,14 @@
 """Shared fixtures.
 
 Tests only read the real project files. Synthetic inputs are written under
-pytest's ``tmp_path``, so knowledge/facts.md is never modified.
+pytest's ``tmp_path``, so knowledge/facts.md is never modified. No test
+contacts a real Ollama server: model responses come from ``FakeOllama``
+(``ollama_fakes.py``), and the HTTP transport is tested against a local
+stand-in server.
 """
 
 import pytest
+from ollama_fakes import FakeOllama
 
 from mascot_lab import (
     KnowledgeBlock,
@@ -60,3 +64,9 @@ def instruction() -> SystemInstruction:
 @pytest.fixture(scope="session")
 def builder(instruction: SystemInstruction, knowledge: KnowledgeBlock) -> PromptBuilder:
     return PromptBuilder(instruction, knowledge)
+
+
+@pytest.fixture
+def ollama() -> FakeOllama:
+    """A scripted Ollama stand-in; it fails the test on any unscripted request."""
+    return FakeOllama()

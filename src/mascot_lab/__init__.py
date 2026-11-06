@@ -1,8 +1,13 @@
 """Mascot-Lab: one shared local evaluation harness for the candidate models of
 the planned rastinaghighi.dev mascot.
 
-This foundation provides the model configuration, the bounded knowledge
-loader, and the shared prompt builder. It never calls Ollama.
+The foundation (Part 1) provides the model configuration, the bounded
+knowledge loader, and the shared prompt builder, exported here. Deterministic
+navigation (Part 2) is in ``mascot_lab.router``. The shared chat engine
+(Part 3) is in ``mascot_lab.engine``, with its Ollama adapter in
+``mascot_lab.ollama``, output validation in ``mascot_lab.output``, and the
+command line in ``mascot_lab.cli`` (``python -m mascot_lab``). Importing the
+package never contacts Ollama.
 """
 
 from mascot_lab.config import (

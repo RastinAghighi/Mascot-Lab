@@ -51,12 +51,29 @@ def test_config_matches_the_model_table_in_the_handoff(models_config: ModelsConf
     assert table == [(model.name, model.tag) for model in models_config.models]
 
 
-def test_all_models_share_the_4096_context_baseline(models_config: ModelsConfig) -> None:
-    assert dict(models_config.baseline_options) == {"num_ctx": 4096}
+# The comparable baseline the owner set for Part 3 (November 6, 2026).
+OWNER_BASELINE_OPTIONS = {
+    "num_ctx": 4096,
+    "temperature": 0.0,
+    "seed": 42,
+    "top_p": 1.0,
+    "num_predict": 160,
+}
+
+
+def test_all_models_share_the_owner_approved_baseline(models_config: ModelsConfig) -> None:
+    assert dict(models_config.baseline_options) == OWNER_BASELINE_OPTIONS
+    assert models_config.baseline_think is False
     for model in models_config.models:
         # Adding a documented exception must be a deliberate change to this test.
         assert model.override is None, model.tag
-        assert dict(model.options) == {"num_ctx": 4096}, model.tag
+        assert dict(model.options) == OWNER_BASELINE_OPTIONS, model.tag
+        assert model.think is False, model.tag
+
+
+def test_baseline_option_types_are_exact(models_config: ModelsConfig) -> None:
+    options = models_config.baseline_options
+    assert [type(options[name]) for name in OWNER_BASELINE_OPTIONS] == [int, float, int, float, int]
 
 
 def test_config_records_a_stable_hash_and_relative_source(models_config: ModelsConfig) -> None:
@@ -114,6 +131,27 @@ def test_list_of_strings_option_is_allowed() -> None:
     assert parse_models_config(dump(data)).baseline_options["stop"] == ("\n\n",)
 
 
+def test_think_is_not_sent_unless_the_baseline_sets_it() -> None:
+    config = parse_models_config(dump(valid_data()))
+    assert config.baseline_think is None
+    assert all(model.think is None for model in config.models)
+
+
+@pytest.mark.parametrize("think", [False, True])
+def test_baseline_think_applies_to_every_model(think: bool) -> None:
+    data = valid_data()
+    data["baseline"]["think"] = think
+    config = parse_models_config(dump(data))
+    assert config.baseline_think is think
+    assert all(model.think is think for model in config.models)
+
+
+def test_hash_tracks_the_think_setting() -> None:
+    data = valid_data()
+    data["baseline"]["think"] = False
+    assert parse_models_config(dump(data)).sha256 != parse_models_config(dump(valid_data())).sha256
+
+
 # -------------------------------------------------------- invalid synthetic
 
 
@@ -166,6 +204,31 @@ INVALID_STRUCTURES = [
     pytest.param(_model(0, tag="family-b:2b-q4_K_M"), "duplicate tag", id="duplicate-tag"),
     pytest.param(_model(0, name="Model B"), "duplicate name", id="duplicate-name"),
     pytest.param(_root(baseline={}), "missing required key.*options", id="baseline-without-options"),
+    pytest.param(
+        _root(baseline={"options": {"num_ctx": 4096}, "think": "false"}),
+        "think must be true or false",
+        id="string-think",
+    ),
+    pytest.param(
+        _root(baseline={"options": {"num_ctx": 4096}, "think": None}),
+        "think must be true or false",
+        id="null-think",
+    ),
+    pytest.param(
+        _root(baseline={"options": {"num_ctx": 4096}, "think": 0}),
+        "think must be true or false",
+        id="integer-think",
+    ),
+    pytest.param(
+        _root(baseline={"options": {"num_ctx": 4096}, "thinking": False}),
+        "unknown key",
+        id="misspelled-think",
+    ),
+    pytest.param(
+        _model(0, think=False),
+        "unknown key",
+        id="per-model-think-outside-overrides",
+    ),
     pytest.param(_baseline_options({}), "must not be empty", id="empty-baseline-options"),
     pytest.param(_baseline_options({"temperature": 0}), "must set num_ctx", id="missing-num-ctx"),
     pytest.param(_baseline_options({"num_ctx": 0}), "positive integer", id="zero-num-ctx"),

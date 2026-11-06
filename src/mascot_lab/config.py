@@ -1,10 +1,12 @@
 """Shared model configuration (``configs/models.yaml``).
 
-One file lists the candidate Ollama tags and the single option baseline that
-all of them share. A model may differ from the baseline only through an
-``overrides`` block that states a ``reason``, so every exception is documented
-in the configuration itself. Prompts and knowledge cannot be configured per
-model: unknown keys are rejected at every level. Validation fails closed.
+One file lists the candidate Ollama tags and the single baseline that all of
+them share: Ollama options and, optionally, Ollama's top-level ``think``
+request field, which is not an option. A model may differ from the baseline
+only through an ``overrides`` block that states a ``reason``, so every
+exception is documented in the configuration itself. Prompts and knowledge
+cannot be configured per model: unknown keys are rejected at every level.
+Validation fails closed.
 """
 
 import json
@@ -29,7 +31,8 @@ SCHEMA_VERSION = 1
 type OptionValue = bool | int | float | str | tuple[str, ...]
 
 _ROOT_KEYS = frozenset({"schema_version", "baseline", "models"})
-_BASELINE_KEYS = frozenset({"options"})
+_BASELINE_KEYS = frozenset({"options", "think"})
+_BASELINE_REQUIRED_KEYS = frozenset({"options"})
 _MODEL_KEYS = frozenset({"name", "tag", "overrides"})
 _MODEL_REQUIRED_KEYS = frozenset({"name", "tag"})
 _OVERRIDE_KEYS = frozenset({"reason", "options"})
@@ -49,12 +52,13 @@ class ModelOverride:
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
-    """One candidate model and the options it runs with."""
+    """One candidate model and the request settings it runs with."""
 
     name: str
     tag: str
     options: Mapping[str, OptionValue]  # effective: baseline plus any documented override
     override: ModelOverride | None
+    think: bool | None  # Ollama's top-level ``think`` field; None means it is not sent
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,7 @@ class ModelsConfig:
     models: tuple[ModelConfig, ...]
     source: str
     sha256: str  # of the canonical JSON form, so comments and layout do not affect it
+    baseline_think: bool | None  # None when the baseline does not set ``think``
 
     @property
     def tags(self) -> tuple[str, ...]:
@@ -94,10 +99,13 @@ def parse_models_config(text: str, *, source: str = "<string>") -> ModelsConfig:
         raise ConfigError(f"{source}: schema_version must be {SCHEMA_VERSION}, found {version!r}")
 
     baseline = _mapping(root["baseline"], f"{source}: baseline")
-    _check_keys(baseline, f"{source}: baseline", _BASELINE_KEYS, _BASELINE_KEYS)
+    _check_keys(baseline, f"{source}: baseline", _BASELINE_KEYS, _BASELINE_REQUIRED_KEYS)
     baseline_options = _options(baseline["options"], f"{source}: baseline.options")
     if "num_ctx" not in baseline_options:
         raise ConfigError(f"{source}: baseline.options must set num_ctx")
+    baseline_think = None
+    if "think" in baseline:
+        baseline_think = _think(baseline["think"], f"{source}: baseline.think")
 
     raw_models = root["models"]
     if not isinstance(raw_models, list) or not raw_models:
@@ -118,7 +126,15 @@ def parse_models_config(text: str, *, source: str = "<string>") -> ModelsConfig:
         if "overrides" in entry:
             override = _override(entry["overrides"], f"{where}.overrides")
             options.update(override.options)
-        models.append(ModelConfig(name, tag, MappingProxyType(options), override))
+        models.append(
+            ModelConfig(
+                name=name,
+                tag=tag,
+                options=MappingProxyType(options),
+                override=override,
+                think=baseline_think,
+            )
+        )
 
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return ModelsConfig(
@@ -127,6 +143,7 @@ def parse_models_config(text: str, *, source: str = "<string>") -> ModelsConfig:
         models=tuple(models),
         source=source,
         sha256=sha256_hex(canonical),
+        baseline_think=baseline_think,
     )
 
 
@@ -189,6 +206,12 @@ def _tag(value: object, where: str) -> str:
     if tag.lower().endswith(":latest"):
         raise ConfigError(f"{where}: {tag!r} can change when re-pulled; use an exact tag")
     return tag
+
+
+def _think(value: object, where: str) -> bool:
+    if type(value) is not bool:
+        raise ConfigError(f"{where} must be true or false, found {value!r}")
+    return value
 
 
 def _options(value: object, where: str) -> dict[str, OptionValue]:

@@ -18,9 +18,22 @@
 schema_version: 1
 
 baseline:
+  # Ollama's top-level `think` request field (not an option), sent with every
+  # request to disable thinking where a model supports it. A model without
+  # Ollama's thinking capability has no thinking mode to switch off, so the
+  # field is expected to change nothing for it (not yet verified).
+  # `python -m mascot_lab validate --ollama` lists which models report the
+  # capability. Reasoning that a model returns anyway is kept in the raw
+  # output, never displayed, and flagged.
+  think: false
+  # The comparable decoding baseline set by the owner for Part 3. Options
+  # not set here come from each model's Modelfile and Ollama's defaults.
   options:
-    # Common context length for the first comparable baseline (handoff, section 4).
-    num_ctx: 4096
+    num_ctx: 4096  # context length (handoff, section 4)
+    temperature: 0.0  # greedy decoding
+    seed: 42
+    top_p: 1.0
+    num_predict: 160  # maximum output tokens
 
 models:
   - name: Granite 4.0 H Micro
