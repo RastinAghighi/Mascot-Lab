@@ -15,3 +15,7 @@ class KnowledgeError(MascotLabError):
 
 class PromptError(MascotLabError):
     """The shared system instruction or a prompt input is invalid."""
+
+
+class CaseError(MascotLabError):
+    """An evaluation case file is missing, malformed, or breaks the case schema."""

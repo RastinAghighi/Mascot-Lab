@@ -31,6 +31,8 @@ No winning model has been selected.
 - knowledge/facts.md — owner-approved knowledge baseline
 - docs/slm-development-handoff.md — development requirements and completed hardware observations
 - docs/design-reference.md — reference to the authoritative website design specification
+- docs/architecture.md — the complete architecture: components, request and evaluation pipelines, record formats, hashes, safety controls, and limitations
+- eval/rubric.md — the provisional human-review rubric
 
 ## Development setup
 
@@ -164,9 +166,83 @@ The design plan does not fix these, so `configs/chat.yaml` marks them provisiona
 
 Off-topic filtering, rate limits, and the other planned safeguards come after the model is chosen (design plan, p. 8) and are not part of this engine.
 
+## Evaluation infrastructure (Part 4)
+
+The evaluation runner sends the same version-controlled cases through the shared chat engine for every configured model and records the machine results. Human grades are kept apart from those results, in review sheets graded with a provisional rubric. No code grades, scores, ranks, or selects a model. `docs/architecture.md` describes every file format in full.
+
+No evaluation set exists yet: the owner writes and freezes the ~20–30 cases in `eval/cases.jsonl`. No real evaluation has been run. The tests use synthetic cases and mocked Ollama responses only.
+
+Files:
+
+- `src/mascot_lab/cases.py`: loads and validates the JSON Lines case file and fails closed with line numbers.
+- `src/mascot_lab/runner.py`: plans a run, asks Ollama (`/api/show`, which runs no model) whether every selected model is installed, sends every case through `ChatEngine.respond` for each model, and stops early when continuing could not produce comparable records.
+- `src/mascot_lab/measurements.py`: the measured values of each response; unavailable values are null.
+- `src/mascot_lab/recorder.py`: writes each run's directory under `results/`.
+- `src/mascot_lab/review.py` and `eval/rubric.md`: the blank, blind review sheet and the provisional rubric it follows.
+
+### Cases
+
+`eval/cases.jsonl` holds one JSON object per line. `id`, `category`, and `message` are required. `expected_behavior` is optional guidance for reviewers, `expected_route` is an optional routing expectation that the runner checks without any model, and `notes` is for case authors. Reviewer guidance and author notes never reach a model. Format illustration only, not an evaluation case:
+
+```json
+{"id": "example-nav", "category": "navigation", "message": "take me to QMIND", "expected_route": {"status": "routed", "route_id": "project_qmind"}}
+```
+
+### Running
+
+```powershell
+.\.venv\Scripts\python.exe -m mascot_lab evaluate --dry-run
+.\.venv\Scripts\python.exe -m mascot_lab evaluate --note "first baseline pass"
+.\.venv\Scripts\python.exe -m mascot_lab evaluate --model granite4:micro-h --case CASE_ID --repeat 3
+```
+
+- `--dry-run` validates the cases and prints the plan: how many records and Ollama requests the run would make, which cases the application answers without a model, and whether each `expected_route` holds. It contacts nothing and writes nothing.
+- `--model` (tag or configured name) and `--case` (ID) can be repeated to select a subset. Models always run in configuration order and cases in file order. `--repeat N` runs every selected case N times per model, to observe variability.
+- `--cases` reads another case file. `--results-dir` writes somewhere other than `results/`: inside this repository only `results/` is accepted, because only it is ignored by Git. `--note` is stored in the manifest. `--ollama-url` and `--timeout` work as they do for `chat`.
+- Each model's requests run back to back. Requests are sequential and never retried. An error response such as a timeout is recorded and the run continues. The run stops early (`aborted`) when Ollama cannot be reached or the knowledge block becomes unavailable or changes. Ctrl+C (`interrupted`) keeps every record written before it.
+
+Exit status: 0 when every planned record was written (whatever the responses were), 1 when a model is not installed, Ollama cannot be reached, or the run stopped early, and 2 for invalid configuration, cases, or arguments.
+
+### Results
+
+Each run creates `results/<run_id>/`, for example `results/20261106T150000Z-3fa91c/`, and never reuses a directory:
+
+| File | Content |
+| --- | --- |
+| `manifest.json` | Settings, every configuration hash, the knowledge hash, each model's effective options and `/api/show` capabilities and Modelfile parameters, the exact system message (stored once, keyed by its SHA-256), the rubric hash, counts, and the final status. |
+| `records.jsonl` | One complete record per response: the case, the model, the status, the route check, the measurements, and the engine's full `ChatResponse` record (raw and validated output, prompt hashes, request settings, errors). |
+| `records.csv` | The same records as flat columns for spreadsheets. |
+| `review.csv` | One blank row per record for human grading. |
+
+| Measurement | Source | Null when |
+| --- | --- | --- |
+| `pipeline_ms` | The runner's clock around the whole engine call | never |
+| `elapsed_ms` | The Ollama client's clock around the HTTP request | no request was sent |
+| `time_to_first_token_ms` | Not measured: requests are not streamed | always |
+| `load_duration_ns`, `prompt_eval_duration_ns`, `eval_duration_ns`, `total_duration_ns` | Reported by Ollama | not reported |
+| `prompt_tokens`, `output_tokens` | Ollama's `prompt_eval_count` and `eval_count` | not reported |
+| `tokens_per_second` | `output_tokens` ÷ (`eval_duration_ns` ÷ 10⁹) | either input is missing, or the duration is zero |
+| `answer_characters`, `word_count`, `answer_lines` | The displayed answer; lines wrap at the cloud's configured width | the answer is a fixed application reply, not a model answer |
+
+A null is `null` in JSON and an empty cell in CSV; nothing is estimated. CSV files are UTF-8 with a byte-order mark. A text cell that begins with `=`, `+`, `-`, `@`, a tab, or a carriage return gets a leading apostrophe so that spreadsheets do not run model output as a formula; `records.jsonl` keeps the exact text. The results hold raw model output, and the manifest holds the private knowledge block: keep them local.
+
+### Human review
+
+`review.csv` lists, for each record, the message, the reviewer guidance, the status, the actions, the route check, the displayed answer, the raw model output, and the output issues, followed by one blank column for each rubric dimension: `factual_accuracy`, `scope`, `unknown_handling`, `disclosure_boundaries`, `safety`, `navigation`, and `brevity`. Then come `reviewer` and `notes`. It is blind: it shows no model name or tag and no timing or token measurement, and each case's rows are ordered by an opaque `record_id`, not by model. Grade a copy of the sheet (for example `review-<initials>.csv`) using `eval/rubric.md`, and never edit the machine records. `record_id` joins the grades to `records.csv` afterwards.
+
+The rubric is provisional: its dimensions, its scale (`pass`, `partial`, `fail`, `n/a`), and its criteria await owner approval, and its open questions are listed at its end. It defines no weights, totals, thresholds, or decision rule.
+
+### Limitations
+
+- Navigation and invalid-input cases never reach a model, so all six records for such a case are identical. They test the application.
+- The first request to each model can include loading it (`load_duration`). Ollama decides when to load and unload models, and CPU/GPU placement is not recorded.
+- How Ollama reports `prompt_eval_count` when it reuses cached prompt tokens is unverified.
+- The Ollama server version and model digests are not recorded, because the adapter has no request for them yet.
+- Cases are single messages: the engine has no conversation history, so multi-turn steering cannot be tested yet.
+
 ## Status
 
-Foundation (Part 1), deterministic navigation (Part 2), and the shared chat engine (Part 3) are implemented with automated tests. The chat engine has been tested only with mocked Ollama responses: no model has been run through this code. The evaluation runner, the evaluation cases, and the results recorder are not implemented yet. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
+Foundation (Part 1), deterministic navigation (Part 2), the shared chat engine (Part 3), and the evaluation infrastructure (Part 4) are implemented with automated tests. Everything has been tested only with synthetic inputs and mocked Ollama responses: no model has been run through this code. The evaluation cases have not been written, no evaluation has been run, and no model has been ranked or selected. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
 
 ## Repository policy
 

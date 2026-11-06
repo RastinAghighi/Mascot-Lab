@@ -1,8 +1,10 @@
-"""Command line for the shared chat engine.
+"""Command line for the shared chat engine and the evaluation runner.
 
     python -m mascot_lab validate [--ollama]
     python -m mascot_lab route MESSAGE
     python -m mascot_lab chat --model TAG_OR_NAME [--dry-run] [--show-prompt] MESSAGE
+    python -m mascot_lab evaluate [--cases FILE] [--model TAG_OR_NAME]... [--case ID]...
+                                  [--repeat N] [--results-dir DIR] [--note TEXT] [--dry-run]
 
 ``validate`` checks every configuration file and the knowledge block without
 contacting Ollama. With ``--ollama`` it also reads each configured model's
@@ -10,22 +12,27 @@ metadata from the local server (``/api/show``), which runs no model.
 ``route`` shows how a message is handled before any model is called.
 ``chat`` sends one message to one configured model through the full
 pipeline; with ``--dry-run`` it prints the exact request instead of sending
-it. ``route`` and ``chat`` print JSON.
+it. ``route`` and ``chat`` print JSON. ``evaluate`` runs the evaluation cases
+against the configured models and records the results under ``results/``;
+with ``--dry-run`` it prints the plan and contacts nothing.
 
-Exit status: 0 on success, 1 when a request fails or a configured model is
-not installed, and 2 for invalid configuration or arguments.
+Exit status: 0 on success, 1 when a request fails, a configured model is not
+installed, or an evaluation run stops before writing every planned record,
+and 2 for invalid configuration, cases, or arguments.
 """
 
 import argparse
 import copy
 import json
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
+from mascot_lab.cases import load_cases
 from mascot_lab.config import ModelsConfig, OptionValue
 from mascot_lab.engine import ChatEngine, ChatResponse, ChatStatus, route_to_dict
-from mascot_lab.errors import MascotLabError
+from mascot_lab.errors import ConfigError, MascotLabError
 from mascot_lab.ollama import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_S,
@@ -34,7 +41,22 @@ from mascot_lab.ollama import (
     OllamaErrorCode,
     Transport,
 )
+from mascot_lab.paths import display_path
 from mascot_lab.prompt import PromptBuilder
+from mascot_lab.recorder import RUN_FILES, check_results_dir
+from mascot_lab.review import RUBRIC_PATH
+from mascot_lab.runner import (
+    EvaluationPlan,
+    EvaluationRunner,
+    ModelsNotInstalledError,
+    PlannedCase,
+    RecordProgress,
+    RouteCheck,
+    RunResult,
+    RunStart,
+    RunStatus,
+    plan_evaluation,
+)
 
 PROGRAM = "python -m mascot_lab"
 
@@ -97,6 +119,53 @@ def _parser() -> argparse.ArgumentParser:
     _add_ollama_arguments(chat)
     chat.add_argument("message")
     chat.set_defaults(handler=_chat)
+
+    evaluate = commands.add_parser(
+        "evaluate",
+        help="run the evaluation cases against the configured models",
+        description="Send every selected case through the shared chat engine for every selected "
+        "model and record the machine results in a new directory under results/: manifest.json, "
+        "records.jsonl, records.csv, and a blank review sheet, review.csv. Nothing is graded, "
+        "scored, or ranked. Ollama is checked first with /api/show, which runs no model.",
+    )
+    evaluate.add_argument(
+        "--cases", metavar="FILE", help="JSON Lines case file (default: eval/cases.jsonl)"
+    )
+    evaluate.add_argument(
+        "--model",
+        action="append",
+        metavar="TAG_OR_NAME",
+        help="evaluate only this configured model; repeat for more (default: all six, in "
+        "configuration order)",
+    )
+    evaluate.add_argument(
+        "--case",
+        action="append",
+        metavar="ID",
+        help="run only this case; repeat for more (default: every case, in file order)",
+    )
+    evaluate.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="run every selected case N times per model (default: 1)",
+    )
+    evaluate.add_argument(
+        "--results-dir",
+        metavar="DIR",
+        help="where run directories are created (default: results/); inside this repository "
+        "only results/ is accepted, because only it is ignored by Git",
+    )
+    evaluate.add_argument("--note", metavar="TEXT", help="a short note stored in the run's manifest")
+    evaluate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the plan, with each case's routing and route check, without contacting "
+        "Ollama or writing files",
+    )
+    _add_ollama_arguments(evaluate)
+    evaluate.set_defaults(handler=_evaluate)
     return parser
 
 
@@ -236,6 +305,119 @@ def _chat(args: argparse.Namespace, transport: Transport | None) -> int:
 
 def _exit_status(response: ChatResponse) -> int:
     return 1 if response.status is ChatStatus.ERROR else 0
+
+
+def _evaluate(args: argparse.Namespace, transport: Transport | None) -> int:
+    if args.repeat < 1:
+        raise ConfigError(f"--repeat must be at least 1, found {args.repeat}")
+    client = OllamaClient(args.ollama_url, timeout_s=args.timeout, transport=transport)
+    engine = ChatEngine.from_files(client=client)
+    runner = EvaluationRunner(engine, results_dir=args.results_dir)
+    case_set = load_cases(args.cases, route_ids=engine.router.config.route_ids)
+    plan = plan_evaluation(
+        engine, case_set, case_ids=args.case, models=args.model, repetitions=args.repeat
+    )
+    if args.dry_run:
+        print("Evaluation plan (dry run: nothing is sent to Ollama and no files are written).")
+        _print_plan(plan, runner)
+        _print_cases(plan)
+        return 0
+
+    print("Evaluation run.")
+    _print_plan(plan, runner)
+    try:
+        result = runner.run(plan, note=args.note, on_start=_print_start, on_record=_print_record)
+    except ModelsNotInstalledError as exc:
+        print(f"error: {exc}; nothing was run or written", file=sys.stderr)
+        return 1
+    except OllamaError as exc:
+        print(f"error: {exc.message}; nothing was run or written", file=sys.stderr)
+        return 1
+    _print_result(result)
+    return 0 if result.status is RunStatus.COMPLETED else 1
+
+
+def _print_plan(plan: EvaluationPlan, runner: EvaluationRunner) -> None:
+    case_set = plan.case_set
+    categories = Counter(planned.case.category for planned in plan.cases)
+    print(f"cases      {case_set.source}  sha256 {case_set.sha256}")
+    print(
+        f"           {len(plan.cases)} of {len(case_set.cases)} selected; categories: "
+        + ", ".join(f"{name} {count}" for name, count in categories.items())
+    )
+    print(f"models     {', '.join(model.tag for model in plan.models)}")
+    print(
+        f"records    {plan.total_records} ({_count(len(plan.cases), 'case')} x "
+        f"{_count(len(plan.models), 'model')} x {_count(plan.repetitions, 'repetition')}); "
+        f"Ollama chat requests: {plan.model_requests}"
+    )
+    print(f"results    {display_path(runner.results_dir / '<run id>')}")
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}{'' if number == 1 else 's'}"
+
+
+def _print_cases(plan: EvaluationPlan) -> None:
+    width = max(len(planned.case.id) for planned in plan.cases)
+    category_width = max(len(planned.case.category) for planned in plan.cases)
+    for planned in plan.cases:
+        check = "" if planned.route_check is None else f"  expected route: {planned.route_check.value}"
+        print(
+            f"  {planned.case.id:<{width}}  {planned.case.category:<{category_width}}  "
+            f"{_handled_by(planned)}{check}"
+        )
+    checked = [planned.route_check for planned in plan.cases if planned.route_check is not None]
+    mismatched = checked.count(RouteCheck.MISMATCH)
+    print(f"route expectations: {len(checked)} checked, {mismatched} mismatched")
+
+
+def _handled_by(planned: PlannedCase) -> str:
+    status, route = planned.application_status, planned.route
+    if status is None:
+        return "model"
+    detail = ""
+    if route is not None and route.route_id is not None:
+        detail = f" {route.route_id}"
+    elif route is not None and route.candidates:
+        detail = f" {', '.join(route.candidates)}"
+    return f"application: {status.value}{detail}"
+
+
+def _print_start(start: RunStart) -> None:
+    if start.models_checked:
+        print("Every selected model is installed (Ollama /api/show; no model was run).")
+    print(f"run        {start.run_id}  ->  {display_path(start.directory)}")
+
+
+def _print_record(progress: RecordProgress) -> None:
+    width = len(str(progress.total))
+    line = (
+        f"[{progress.sequence:>{width}}/{progress.total}] {progress.model_tag}  {progress.case_id}  "
+        f"r{progress.repetition}  {progress.status.value}"
+    )
+    if progress.error_code is not None:
+        line += f" ({progress.error_code})"
+    if progress.elapsed_ms is not None:
+        line += f"  {progress.elapsed_ms:.0f} ms"
+    print(line, flush=True)
+
+
+def _print_result(result: RunResult) -> None:
+    outcome = f"Run {result.status.value}: {result.records_written} of {result.planned_records} planned records written."
+    print(outcome)
+    if result.stop_reason is not None:
+        print(f"stopped: {result.stop_reason}")
+    print("statuses: " + (", ".join(f"{name} {count}" for name, count in result.status_counts.items()) or "none"))
+    print(
+        f"route checks (records): {result.route_checks.get(RouteCheck.MATCH, 0)} match, "
+        f"{result.route_checks.get(RouteCheck.MISMATCH, 0)} mismatch"
+    )
+    print(f"results: {display_path(result.directory)}  ({', '.join(RUN_FILES.values())})")
+    print(
+        f"Grade in a copy of review.csv using {display_path(RUBRIC_PATH)}; the machine records are "
+        "not edited."
+    )
 
 
 def _baseline(models: ModelsConfig) -> str:

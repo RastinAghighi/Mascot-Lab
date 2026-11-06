@@ -6,8 +6,12 @@ knowledge loader, and the shared prompt builder, exported here. Deterministic
 navigation (Part 2) is in ``mascot_lab.router``. The shared chat engine
 (Part 3) is in ``mascot_lab.engine``, with its Ollama adapter in
 ``mascot_lab.ollama``, output validation in ``mascot_lab.output``, and the
-command line in ``mascot_lab.cli`` (``python -m mascot_lab``). Importing the
-package never contacts Ollama.
+command line in ``mascot_lab.cli`` (``python -m mascot_lab``). The evaluation
+infrastructure (Part 4) is in ``mascot_lab.cases`` (the case file),
+``mascot_lab.runner`` (planning and running), ``mascot_lab.measurements``,
+``mascot_lab.recorder`` (the files under ``results/``), and
+``mascot_lab.review`` (the blank human review sheet). Importing the package
+never contacts Ollama. See ``docs/architecture.md``.
 """
 
 from mascot_lab.config import (
@@ -17,7 +21,7 @@ from mascot_lab.config import (
     load_models_config,
     parse_models_config,
 )
-from mascot_lab.errors import ConfigError, KnowledgeError, MascotLabError, PromptError
+from mascot_lab.errors import CaseError, ConfigError, KnowledgeError, MascotLabError, PromptError
 from mascot_lab.knowledge import KnowledgeBlock, extract_knowledge, load_knowledge
 from mascot_lab.prompt import (
     BuiltPrompt,
@@ -28,6 +32,7 @@ from mascot_lab.prompt import (
 
 __all__ = [
     "BuiltPrompt",
+    "CaseError",
     "ConfigError",
     "KnowledgeBlock",
     "KnowledgeError",
