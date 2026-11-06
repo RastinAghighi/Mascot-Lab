@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mascot-lab"
+version = "0.1.0"
+description = "Shared local evaluation harness for the candidate models of the planned rastinaghighi.dev mascot."
+readme = "README.md"
+requires-python = ">=3.12"
+# PyPI rejects uploads that carry a "Private ::" classifier.
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]

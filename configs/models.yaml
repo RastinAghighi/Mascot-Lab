@@ -1,0 +1,37 @@
+# Mascot-Lab model configuration: one file shared by all six candidates.
+#
+# The tags are copied exactly from docs/slm-development-handoff.md, section 3.
+# Never change a tag silently; tests compare this list with the handoff.
+#
+# Every model inherits the identical `baseline`. A model may differ from it
+# only through an `overrides` block that states its reason, for example:
+#
+#   overrides:
+#     reason: Why this model cannot use the shared baseline value.
+#     options:
+#       num_ctx: 2048
+#
+# Prompts, instructions, and knowledge are never configured per model.
+#
+# Documented exceptions in this file: none.
+
+schema_version: 1
+
+baseline:
+  options:
+    # Common context length for the first comparable baseline (handoff, section 4).
+    num_ctx: 4096
+
+models:
+  - name: Granite 4.0 H Micro
+    tag: "granite4:micro-h"
+  - name: Gemma 2B Instruct (original)
+    tag: "gemma:2b-instruct-q4_K_M"
+  - name: Gemma 2B Instruct v1.1
+    tag: "gemma:2b-instruct-v1.1-q4_K_M"
+  - name: Qwen3.5 2B
+    tag: "qwen3.5:2b-q4_K_M"
+  - name: Phi-4-mini
+    tag: "phi4-mini:3.8b-q4_K_M"
+  - name: Granite 4.2 3B
+    tag: "granite4.2:3b-q4_K_M"
