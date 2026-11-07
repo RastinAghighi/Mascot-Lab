@@ -6,7 +6,7 @@ Development and evaluation environment for the small language model (SLM) poweri
 
 Evaluate six local Ollama models using one shared Python implementation, consistent instructions, an approved knowledge baseline, deterministic navigation, and reproducible tests.
 
-No winning model has been selected.
+A v1 model has been selected provisionally after the first real evaluation (`docs/model-selection-v1.md`, `configs/selection.yaml`). Nothing is deployed.
 
 ## Candidate models
 
@@ -33,6 +33,9 @@ No winning model has been selected.
 - docs/design-reference.md — reference to the authoritative website design specification
 - docs/architecture.md — the complete architecture: components, request and evaluation pipelines, record formats, hashes, safety controls, and limitations
 - eval/rubric.md — the provisional human-review rubric
+- eval/cases.jsonl — the 24-case v1 evaluation set
+- docs/model-selection-v1.md — the first real evaluation, the provisional v1 model selection, and its deployment readiness
+- docs/future-improvements.md — deferred work, separating what blocks a safe public launch from optional improvements
 
 ## Development setup
 
@@ -154,6 +157,8 @@ The shared baseline in `configs/models.yaml`, set by the owner for Part 3: `num_
 - Requests are not streamed, so time to first token is not measured; the planned website streams answers (design plan, pp. 6 and 9). Counts and durations are recorded only as Ollama reports them; missing values stay empty.
 - The system message is 7,670 characters. Its token count depends on each model's tokenizer and has not been measured. Ollama reports `prompt_eval_count` per request.
 
+The first real run checked several of these points: which models report thinking, their Modelfile parameters, the Gemma templates, prompt token counts, and model loading. The findings are in `docs/model-selection-v1.md`, sections 2 and 3.
+
 ### Provisional values awaiting owner approval
 
 The design plan does not fix these, so `configs/chat.yaml` marks them provisional:
@@ -170,7 +175,7 @@ Off-topic filtering, rate limits, and the other planned safeguards come after th
 
 The evaluation runner sends the same version-controlled cases through the shared chat engine for every configured model and records the machine results. Human grades are kept apart from those results, in review sheets graded with a provisional rubric. No code grades, scores, ranks, or selects a model. `docs/architecture.md` describes every file format in full.
 
-No evaluation set exists yet: the owner writes and freezes the ~20–30 cases in `eval/cases.jsonl`. No real evaluation has been run. The tests use synthetic cases and mocked Ollama responses only.
+`eval/cases.jsonl` holds the 24-case v1 evaluation set, written to the owner's specification: 20 cases answered by models and 4 navigation cases answered by the application. `tests/test_eval_cases.py` keeps it frozen. The first real evaluation ran on November 6, 2026; its results and the provisional selection are in `docs/model-selection-v1.md`. The other tests use synthetic cases and mocked Ollama responses only.
 
 Files:
 
@@ -242,7 +247,11 @@ The rubric is provisional: its dimensions, its scale (`pass`, `partial`, `fail`,
 
 ## Status
 
-Foundation (Part 1), deterministic navigation (Part 2), the shared chat engine (Part 3), and the evaluation infrastructure (Part 4) are implemented with automated tests. Everything has been tested only with synthetic inputs and mocked Ollama responses: no model has been run through this code. The evaluation cases have not been written, no evaluation has been run, and no model has been ranked or selected. Model quality, latency, robustness, hosting compatibility, and deployment security have not yet been established.
+Foundation (Part 1), deterministic navigation (Part 2), the shared chat engine (Part 3), and the evaluation infrastructure (Part 4) are implemented with automated tests, which use synthetic inputs and mocked Ollama responses.
+
+On November 6, 2026 the 24-case evaluation set ran against all six models through this code, one pass per case and model. Phi-4-mini (`phi4-mini:3.8b-q4_K_M`) was selected provisionally, with Granite 4.2 3B (`granite4.2:3b-q4_K_M`) as the backup (`docs/model-selection-v1.md`). The grades behind the choice are an AI reviewer's provisional grades and await the owner's review.
+
+Nothing is deployed. Hosting, production integration, and the planned safeguards are not built, and they block a public launch (`docs/future-improvements.md`).
 
 ## Repository policy
 

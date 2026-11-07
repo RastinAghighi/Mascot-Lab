@@ -1,0 +1,52 @@
+# Mascot-Lab v1 model selection record. PROVISIONAL.
+#
+# Names the model chosen after the first real evaluation on November 6, 2026,
+# by its exact Ollama tag from configs/models.yaml. It does not change the
+# shared six-model evaluation configuration: configs/models.yaml still lists
+# all six candidates with one baseline, and every evaluation still compares
+# them under identical settings. No code reads this file yet; the `chat` and
+# `evaluate` commands still take --model explicitly.
+#
+# The choice is provisional: the grades behind it are an AI reviewer's
+# provisional grades, the rubric is still provisional, and the owner has not
+# yet reviewed either. Nothing is deployed, and the selected model is not
+# ready for public deployment. The evidence, reasons, weaknesses, and launch
+# blockers are in docs/model-selection-v1.md.
+#
+# tests/test_selection.py checks this file against configs/models.yaml.
+
+schema_version: 1
+status: provisional
+decided: "2026-11-06"
+document: docs/model-selection-v1.md
+
+selected:
+  name: Phi-4-mini
+  tag: "phi4-mini:3.8b-q4_K_M"
+  ollama_model_id: 78fad5d182a7  # `ollama list` ID on the evaluation machine
+
+backup:
+  name: Granite 4.2 3B
+  tag: "granite4.2:3b-q4_K_M"
+  ollama_model_id: 40577dc168a3
+
+evaluation:
+  main_run: 20261106T221029Z-71087c  # results/ (local, not in Git)
+  supplementary_runs:  # the one record that timed out while the model loaded
+    - 20261106T222238Z-9aa347  # timed out again
+    - 20261106T222628Z-54cadb  # answered, after a documented load-only warm-up
+  smoke_test: smoke-20261106T224121Z-phi4-mini
+  cases: eval/cases.jsonl
+  cases_sha256: eadef2ce7b25cd5e0387a6dfbb6bcaea4ab53f450cd22cf095e052f33e12fbb6
+  model_inference_cases: 20  # plus 4 navigation cases answered by the application
+  models_sha256: 695d08109c82bd8394d5a04ba47f63ad5f4911d7d507bd26777fd8730548b715
+  system_instruction_sha256: 2f4c6c263d0f34d00ed3fbcb3336ea5868acdb93cd147043801f12aea06996b7
+  knowledge_sha256: 097c9849b8624c623df35ceb18d7e6435957431dce740486c02c12f1ec092838
+  rubric_sha256: d2d51ca2057887977315b45958ad1f36f18ee86180d0aa0df13e2c7c618f41b2
+  grades: provisional AI review (review-claude.csv in each run directory); human review pending
+
+deployment:
+  deployed: false
+  public_deployment_ready: false
+  hosting: unresolved  # not in the Workers AI catalog as checked on 2026-11-06
+  license: MIT  # bundled license text and the upstream model card; owner sign-off pending

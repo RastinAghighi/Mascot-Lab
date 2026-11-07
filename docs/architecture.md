@@ -1,6 +1,6 @@
 # Mascot-Lab architecture
 
-**Status, November 6, 2026:** Parts 1–4 are implemented and covered by automated tests that use mocked Ollama responses only. No model has been run through this code, no evaluation case set exists yet, no evaluation has been run, and no model has been selected.
+**Status, November 6, 2026:** Parts 1–4 are implemented and covered by automated tests that use mocked Ollama responses. The 24-case evaluation set (`eval/cases.jsonl`) has run against all six models through this code, and a v1 model has been selected provisionally: see `docs/model-selection-v1.md`. Nothing is deployed.
 
 **Authoritative sources:** the *rastinaghighi.dev Design Plan* of November 4, 2026 (kept privately in `private/`, never committed) for every website and mascot decision; `docs/slm-development-handoff.md` for the evaluation requirements; and `knowledge/facts.md` for the approved facts. This document describes the code. It does not change those documents or decide anything they leave open.
 
@@ -20,15 +20,16 @@ Mascot-Lab/
 ├── configs/
 │   ├── models.yaml        six exact tags, one shared baseline, documented overrides (none)
 │   ├── routes.yaml        navigation allowlist: semantic route IDs, aliases, ambiguous terms
-│   └── chat.yaml          input limit, cloud approximation, labels, fixed replies (provisional values)
+│   ├── chat.yaml          input limit, cloud approximation, labels, fixed replies (provisional values)
+│   └── selection.yaml     the provisional v1 model selection record (checked by tests; read by no code)
 ├── prompts/system.md      the one shared system instruction, with {{MASCOT_KNOWLEDGE}}
 ├── knowledge/facts.md     owner-approved facts; only the marked block reaches a model
 ├── eval/
 │   ├── rubric.md          provisional human-review rubric
-│   └── cases.jsonl        the evaluation set: not written yet (the owner writes and freezes it)
+│   └── cases.jsonl        the 24-case v1 evaluation set, frozen by tests/test_eval_cases.py
 ├── src/mascot_lab/        the package (section 3)
 ├── tests/                 automated tests; synthetic inputs and mocked Ollama only
-├── docs/                  handoff, design reference, this document
+├── docs/                  handoff, design reference, this document, model selection, future improvements
 ├── results/               created by evaluation runs; ignored by Git
 └── private/               the design PDF; ignored by Git
 ```
@@ -223,10 +224,12 @@ The shared baseline is `num_ctx` 4096, `temperature` 0.0, `seed` 42, `top_p` 1.0
 - **Blind review** depends on reviewers not opening `records.csv` or `records.jsonl` before grading.
 - **Identical results across models:** navigation and invalid-input cases never reach a model, so all six records for such a case match. They test the application, not the models.
 
+The first real run checked several of these points: thinking, Modelfile parameters, the Gemma templates, prompt token counts, and a cold model load that outlasted the timeout. The findings are in `docs/model-selection-v1.md`, sections 2 and 3.
+
 ## 9. Decisions left to the owner
 
-- The final ~20–30 evaluation cases in `eval/cases.jsonl`, written and frozen by the owner. None exist yet.
+- Review of the 24 evaluation cases in `eval/cases.jsonl`, written to the owner's specification on November 6, 2026.
 - Approval or revision of `eval/rubric.md`: the dimensions, the scale, the anchors, blind review, and the reviewer process. Its open questions are listed at its end.
 - The provisional values in `configs/chat.yaml` and the navigation decisions recorded in `configs/routes.yaml` (README, Parts 2 and 3).
-- How results are compared, which models are repeated, and which model is chosen. Per the handoff (section 7), that happens only after real runs and human grading. No code here ranks or selects.
+- Confirmation of the provisional selection in `docs/model-selection-v1.md`, which rests on one pass and provisional AI grades; human grading and repeated runs are pending. No code here ranks or selects.
 - Licensing, hosting, Cloudflare Workers AI compatibility, and deployment (handoff, Phase 2).
