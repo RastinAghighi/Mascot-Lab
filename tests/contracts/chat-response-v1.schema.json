@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rastinaghighi.dev chat API v1: response body (PROPOSED)",
+  "description": "Body of every response from POST /api/chat/v1, whether it succeeds or fails: HTTP 200 (answered, navigation, refused), 4xx (error) and 429 or 5xx (unavailable). PROPOSED and not owner-approved: see docs/api/chat-v1.md. All seven members are always present, and no other member is allowed at any level. This structural rule keeps unexpected members out of the body. It does not show that the strings in the permitted members are safe to display or where they came from: keeping private or internal information out of those values depends on the origin's content controls (chat-v1.md, section 18.2), not on this schema. Which HTTP status goes with each status and error code is defined in chat-v1.md, section 9.",
+  "type": "object",
+  "properties": {
+    "request_id": {
+      "description": "The identifier the gateway assigned to this request (chat-v1.md, section 11).",
+      "$ref": "#/$defs/request_id"
+    },
+    "status": {
+      "description": "Public outcome. answered: the model's validated answer. navigation: the application handled a navigation command without the model. refused: the application declined without showing model text. error: the request was invalid. unavailable: no answer can be given now.",
+      "enum": ["answered", "navigation", "refused", "error", "unavailable"]
+    },
+    "answer_text": {
+      "description": "The complete text to display: the validated model answer when status is answered, otherwise a fixed application text. One line of plain text; render it as text, never as HTML or Markdown.",
+      "$comment": "4000 is a PROPOSED backstop. The origin fails closed with HTTP 502 instead of truncating if a validated answer is longer.",
+      "$ref": "#/$defs/display_text",
+      "maxLength": 4000
+    },
+    "cloud_preview": {
+      "description": "The beginning of answer_text, sized for the thought cloud. Identical to answer_text when that fits. Otherwise it is shortened: a nonempty start of answer_text followed by an ellipsis (U+2026). The cut is normally at a word boundary; a word too long for a cloud line may be cut within the word. This schema checks only the preview's length and characters. It cannot verify that the preview is derived from answer_text or how it was shortened; those are runtime checks (chat-v1.md, section 18.2, R4).",
+      "$comment": "137 = 3 lines x 45 characters + 2 joining spaces, from the inference application's PROVISIONAL cloud approximation.",
+      "$ref": "#/$defs/display_text",
+      "maxLength": 137
+    },
+    "continuation": {
+      "description": "null, or the semantic route of the mascot's page, where the full answer can be read.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/continuation" }
+      ]
+    },
+    "actions": {
+      "description": "Allowlisted semantic navigation actions. Empty unless status is navigation.",
+      "type": "array",
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "error": {
+      "description": "null unless status is error or unavailable.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/error" }
+      ]
+    }
+  },
+  "required": ["request_id", "status", "answer_text", "cloud_preview", "continuation", "actions", "error"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "answered" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "actions": { "maxItems": 0 },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "navigation" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "actions": {
+            "oneOf": [
+              {
+                "description": "A routed command: exactly one navigate action.",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": { "properties": { "type": { "const": "navigate" } } }
+              },
+              {
+                "description": "An ambiguous destination: one suggest action per candidate route, at least two, each route at most once.",
+                "minItems": 2,
+                "uniqueItems": true,
+                "items": { "properties": { "type": { "const": "suggest" } } }
+              }
+            ]
+          },
+          "continuation": { "$ref": "#/$defs/fixed_text_continuation" },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "refused" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "actions": { "maxItems": 0 },
+          "continuation": { "$ref": "#/$defs/fixed_text_continuation" },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "error" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "answer_text": { "maxLength": 137 },
+          "actions": { "maxItems": 0 },
+          "continuation": { "type": "null" },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "enum": ["invalid_request", "empty_input", "input_too_long"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "unavailable" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "answer_text": { "maxLength": 137 },
+          "actions": { "maxItems": 0 },
+          "continuation": { "type": "null" },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "enum": ["rate_limited", "timeout", "unavailable"] }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "request_id": {
+      "description": "A random version 4 UUID in lowercase canonical form. It is opaque and carries no time, host, sequence or visitor information.",
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "display_text": {
+      "description": "Plain text on one line, with at least one non-whitespace character. The pattern rejects the C0 controls (U+0000 to U+001F), DEL (U+007F), the C1 controls (U+0080 to U+009F), the line and paragraph separators (U+2028, U+2029) and the explicit bidirectional embedding, override and isolate controls (U+202A to U+202E, U+2066 to U+2069). It does not reject the directional marks U+061C, U+200E and U+200F or any other Unicode format character (category Cf) outside those two ranges, such as U+00AD, U+200B or U+FEFF. Removing control and format characters from model answers is a runtime requirement of the origin (chat-v1.md, section 18.2, R2), not a rule of this schema.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]"
+      }
+    },
+    "action_route_id": {
+      "description": "Allowlisted semantic route of a featured project, in the inference application's configuration order. A route ID is not a URL: only the website maps it to a page.",
+      "enum": ["project_qmind", "project_ingenuity", "project_satira", "project_deeplense", "project_website"]
+    },
+    "action": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "navigate: go to the route's page now. suggest: offer a 'take me there' button for it.",
+          "enum": ["navigate", "suggest"]
+        },
+        "route_id": { "$ref": "#/$defs/action_route_id" }
+      },
+      "required": ["type", "route_id"],
+      "additionalProperties": false
+    },
+    "continuation": {
+      "type": "object",
+      "properties": {
+        "route_id": {
+          "description": "The mascot's page. It is not an action route: no navigation command selects it.",
+          "const": "mascot_chat"
+        },
+        "reasons": {
+          "description": "exceeds_cloud: cloud_preview is a shortened start of answer_text, present exactly when the preview is shortened (a runtime check: chat-v1.md, section 18.2, R4). output_limit_reached: generation stopped at the origin's length limit, so answer_text itself is incomplete. Listed in this order when both apply.",
+          "enum": [
+            ["exceeds_cloud"],
+            ["output_limit_reached"],
+            ["exceeds_cloud", "output_limit_reached"]
+          ]
+        }
+      },
+      "required": ["route_id", "reasons"],
+      "additionalProperties": false
+    },
+    "fixed_text_continuation": {
+      "description": "For statuses whose text is fixed by the application, the generation limit cannot apply, so a continuation, which arises only if a configured text outgrows the cloud, has the single reason exceeds_cloud.",
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": { "reasons": { "const": ["exceeds_cloud"] } }
+        }
+      ]
+    },
+    "error": {
+      "description": "Machine-readable reason. There is deliberately no free-text member: the visitor-facing text is answer_text, which is always a fixed string.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": ["invalid_request", "empty_input", "input_too_long", "rate_limited", "timeout", "unavailable"]
+        },
+        "retry_after_seconds": {
+          "description": "Only with rate_limited, and only when the wait is known. It matches the Retry-After header.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      },
+      "required": ["code"],
+      "additionalProperties": false,
+      "if": {
+        "properties": { "code": { "const": "rate_limited" } },
+        "required": ["code"]
+      },
+      "else": {
+        "not": { "required": ["retry_after_seconds"] }
+      }
+    }
+  }
+}

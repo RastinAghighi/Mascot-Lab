@@ -1,0 +1,14 @@
+{
+  "request_id": "d36cef15-69b5-418f-8acf-ea7d344c1d24",
+  "status": "navigation",
+  "answer_text": "Taking you to the website project.",
+  "cloud_preview": "Taking you to the website project.",
+  "continuation": null,
+  "actions": [
+    {
+      "type": "navigate",
+      "route_id": "project_website"
+    }
+  ],
+  "error": null
+}

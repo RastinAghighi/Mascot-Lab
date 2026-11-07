@@ -6,28 +6,35 @@ in-process ``FakeOllama``; responses that the engine cannot produce are
 crafted from real ones with ``dataclasses.replace``. These are not HTTP
 tests: the HTTP adapter does not exist yet.
 
-No standard JSON Schema validator is installed, so ``schema_errors``
-interprets the website repository's response schema with the subset of
-Draft 2020-12 that the schema uses, and fails on any other keyword. Its
-``pattern`` uses Python's regular expressions in place of ECMA-262's. The
-tests that need the schema are skipped when the website repository is not
-next to this one. Model texts are synthetic.
+The public contract's request and response schemas and its examples are
+unchanged copies, in ``tests/contracts``, of the website repository's
+authoritative files; tests/contracts/README.md records their origin and
+SHA-256. They are validated with the standard ``jsonschema`` Draft 2020-12
+validator, whose ``pattern`` uses Python's regular expressions in place of
+ECMA-262's. A missing, altered or invalid copy fails these tests: nothing is
+skipped, and the website repository is never read. Model texts are synthetic.
 """
 
 import ast
 import copy
 import dataclasses
+import importlib.util
 import json
 import random
 import re
+import shutil
 import socket
 import unicodedata
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import validator_for
 from ollama_fakes import TAG, FakeOllama
 
 import mascot_lab.public_response as public_response_module
@@ -70,11 +77,40 @@ LONG_WORD = "Short words first " + "Synthetic" * 20  # the engine's own preview 
 CJK = "这是一个用于界面测试的合成句子。" * 12
 FIXED_TOO_LONG = " ".join(["Sorry, it is unavailable."] * 6)  # longer than an error text may be
 
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "rastinaghighi.dev" / "docs" / "api" / "schemas"
-SCHEMA_PATH /= "chat-response-v1.schema.json"
-EXAMPLES = SCHEMA_PATH.parents[1] / "examples"
-SCHEMA: dict[str, Any] | None = json.loads(SCHEMA_PATH.read_text(encoding="utf-8")) if SCHEMA_PATH.is_file() else None
-needs_schema = pytest.mark.skipif(SCHEMA is None, reason="the website repository's response schema is not next to this one")
+CONTRACTS = Path(__file__).resolve().parent / "contracts"
+EXAMPLES = CONTRACTS / "examples"
+DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+
+
+def load_validator(path: Path) -> Draft202012Validator:
+    """A validator for the schema at ``path``; raises, never skips, unless it is a valid Draft 2020-12 schema."""
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(schema, dict) or schema.get("$schema") != DRAFT_2020_12:
+        raise ValueError(f"{path.name} does not declare JSON Schema Draft 2020-12")
+    # Checked against the metaschema with its formats, so every pattern must be a valid regular expression.
+    Draft202012Validator.check_schema(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
+    # Neither schema uses "format" today; the checker applies to any that a later version adds.
+    return Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
+
+
+def load_drift_checker() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("check_contract_drift", CONTRACTS / "check_contract_drift.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def example(name: str) -> Any:
+    return json.loads((EXAMPLES / name).read_text(encoding="utf-8"))
+
+
+# Loaded on import: a missing or invalid copy is a collection error that stops the run.
+REQUEST_VALIDATOR = load_validator(CONTRACTS / "chat-request-v1.schema.json")
+RESPONSE_VALIDATOR = load_validator(CONTRACTS / "chat-response-v1.schema.json")
+REQUEST_SCHEMA: dict[str, Any] = REQUEST_VALIDATOR.schema
+SCHEMA: dict[str, Any] = RESPONSE_VALIDATOR.schema
+drift = load_drift_checker()
 
 # R7: what the gateway accepts from the origin (chat-v1.md, section 18.2).
 ORIGIN_COMBINATIONS = frozenset(
@@ -170,8 +206,7 @@ def assert_publishable(result: PublicResponse, response: ChatResponse | None = N
     code = None if body["error"] is None else body["error"]["code"]
     assert (result.http_status, body["status"], code) in ORIGIN_COMBINATIONS
     assert gateway_r4_failures(body) == []
-    if SCHEMA is not None:
-        assert schema_errors(body) == []
+    assert schema_errors(body) == []
     if response is not None:
         assert_no_internal_data(wire, response)
 
@@ -193,91 +228,213 @@ def assert_no_internal_data(wire: str, response: ChatResponse) -> None:
         assert sign not in wire.casefold(), sign
 
 
-# ------------------------------------------------- a schema subset checker
-
-_ANNOTATIONS = frozenset({"$schema", "title", "description", "$comment", "$defs", "then", "else"})
-_TYPES = {"object": dict, "array": list, "string": str, "integer": int, "null": type(None)}
+# ------------------------------------------------------ the public contract
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True)
+def schema_errors(instance: Any, validator: Draft202012Validator = RESPONSE_VALIDATOR) -> list[str]:
+    """Where ``instance`` breaks the schema (the response schema by default); empty when it conforms."""
+    return sorted(f"{error.json_path}: {error.message}" for error in validator.iter_errors(instance))
 
 
-def schema_errors(instance: Any, schema: dict[str, Any] | None = None, where: str = "$") -> list[str]:
-    """Where ``instance`` breaks the response schema; empty when it conforms."""
-    assert SCHEMA is not None
-    schema = SCHEMA if schema is None else schema
-    errors: list[str] = []
+# Draft 2020-12 keywords that have no validation function of their own: the core, meta-data and
+# content vocabularies' annotations, and the "then" and "else" that "if" applies.
+_NON_VALIDATING_KEYWORDS = frozenset({
+    "$schema", "$id", "$anchor", "$dynamicAnchor", "$vocabulary", "$comment", "$defs", "title", "description",
+    "default", "deprecated", "readOnly", "writeOnly", "examples", "contentEncoding", "contentMediaType",
+    "contentSchema", "then", "else",
+})  # fmt: skip
+_SUBSCHEMA_MAPS = frozenset({"$defs", "properties", "patternProperties", "dependentSchemas"})
+_SUBSCHEMA_LISTS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_SUBSCHEMAS = frozenset({
+    "not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames",
+    "unevaluatedItems", "unevaluatedProperties", "contentSchema",
+})  # fmt: skip
+
+
+def schema_keywords(schema: Any) -> set[str]:
+    """Every keyword in ``schema`` and its subschemas."""
+    if not isinstance(schema, dict):
+        return set()  # a boolean schema
+    found = set(schema)
     for keyword, value in schema.items():
-        failed = False
-        if keyword in _ANNOTATIONS:
-            continue
-        if keyword == "$ref":
-            assert value.startswith("#/$defs/")
-            errors += schema_errors(instance, SCHEMA["$defs"][value.removeprefix("#/$defs/")], where)
-        elif keyword == "type":
-            failed = type(instance) is not _TYPES[value]
-        elif keyword == "enum":
-            failed = _canonical(instance) not in {_canonical(item) for item in value}
-        elif keyword == "const":
-            failed = _canonical(instance) != _canonical(value)
-        elif keyword in ("minLength", "maxLength", "pattern"):
-            if type(instance) is str:
-                failed = {
-                    "minLength": lambda: len(instance) < value,
-                    "maxLength": lambda: len(instance) > value,
-                    "pattern": lambda: re.search(value, instance) is None,
-                }[keyword]()
-        elif keyword in ("minItems", "maxItems", "uniqueItems", "items"):
-            if type(instance) is list:
-                if keyword == "items":
-                    for index, item in enumerate(instance):
-                        errors += schema_errors(item, value, f"{where}[{index}]")
-                elif keyword == "uniqueItems":
-                    failed = value and len({_canonical(item) for item in instance}) != len(instance)
-                else:
-                    failed = len(instance) < value if keyword == "minItems" else len(instance) > value
-        elif keyword in ("minimum", "maximum"):
-            if type(instance) in (int, float):
-                failed = instance < value if keyword == "minimum" else instance > value
-        elif keyword in ("properties", "required", "additionalProperties"):
-            if type(instance) is dict:
-                if keyword == "properties":
-                    for name, sub in value.items():
-                        if name in instance:
-                            errors += schema_errors(instance[name], sub, f"{where}.{name}")
-                elif keyword == "required":
-                    failed = any(name not in instance for name in value)
-                else:
-                    assert value is False
-                    failed = bool(set(instance) - set(schema.get("properties", {})))
-        elif keyword == "not":
-            failed = not schema_errors(instance, value, where)
-        elif keyword in ("allOf", "anyOf", "oneOf"):
-            passes = [not schema_errors(instance, sub, where) for sub in value]
-            failed = not {"allOf": all(passes), "anyOf": any(passes), "oneOf": passes.count(True) == 1}[keyword]
-        elif keyword == "if":
-            branch = schema.get("else" if schema_errors(instance, value, where) else "then")
-            if branch is not None:
-                errors += schema_errors(instance, branch, where)
+        if keyword in _SUBSCHEMA_MAPS:
+            subschemas = list(value.values())
+        elif keyword in _SUBSCHEMA_LISTS:
+            subschemas = list(value)
+        elif keyword in _SUBSCHEMAS:
+            subschemas = [value]
         else:
-            raise AssertionError(f"schema_errors does not support {keyword!r}")
-        if failed:
-            errors.append(f"{where}: {keyword}")
-    return errors
+            continue
+        for subschema in subschemas:
+            found |= schema_keywords(subschema)
+    return found
 
 
-@needs_schema
+CONTRACT_COPIES = {
+    "chat-request-v1.schema.json", "chat-response-v1.schema.json",
+    "examples/answered.json", "examples/error.json", "examples/navigation.json", "examples/request.json",
+}  # fmt: skip
+
+
+def test_the_contract_copies_are_the_recorded_files() -> None:
+    record = drift.read_record()
+    present = {path.relative_to(CONTRACTS).as_posix() for path in CONTRACTS.rglob("*.json")}
+    assert {entry.copy for entry in record} == present == CONTRACT_COPIES
+    for entry in record:
+        assert drift.sha256(CONTRACTS / entry.copy) == entry.sha256, entry.copy
+
+
+@pytest.mark.parametrize("validator", [REQUEST_VALIDATOR, RESPONSE_VALIDATOR], ids=["request", "response"])
+def test_the_schemas_are_valid_draft_2020_12(validator: Draft202012Validator) -> None:
+    schema = validator.schema
+    assert schema["$schema"] == DRAFT_2020_12
+    assert validator_for(schema) is Draft202012Validator
+    Draft202012Validator.check_schema(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
+    # The standard validator ignores an unknown keyword, so a misspelt one would weaken the contract unseen.
+    assert schema_keywords(schema) <= set(Draft202012Validator.VALIDATORS) | _NON_VALIDATING_KEYWORDS
+
+
+def test_the_keyword_walk_reaches_every_subschema() -> None:
+    assert {"oneOf", "then", "uniqueItems", "not", "pattern", "maximum", "else", "const"} <= schema_keywords(SCHEMA)
+    assert schema_keywords({"properties": {"a": {"items": {"misspelt": 1}}}}) == {"properties", "items", "misspelt"}
+
+
+BROKEN_SCHEMAS = [
+    pytest.param(None, FileNotFoundError, None, id="missing"),
+    pytest.param('{"$schema": "' + DRAFT_2020_12 + '", "type": "object"', json.JSONDecodeError, None, id="not-json"),
+    pytest.param('{"type": "object"}', ValueError, "Draft 2020-12", id="no-draft"),
+    pytest.param('{"$schema": "http://json-schema.org/draft-07/schema#"}', ValueError, "Draft 2020-12", id="draft-07"),
+    pytest.param('["not", "a", "schema"]', ValueError, "Draft 2020-12", id="array"),
+    pytest.param('{"$schema": "' + DRAFT_2020_12 + '", "type": "text"}', SchemaError, None, id="unknown-type"),
+    pytest.param('{"$schema": "' + DRAFT_2020_12 + '", "maxLength": -1}', SchemaError, None, id="negative-length"),
+    pytest.param('{"$schema": "' + DRAFT_2020_12 + '", "pattern": "("}', SchemaError, "regex", id="invalid-pattern"),
+]
+
+
+@pytest.mark.parametrize(("text", "error", "match"), BROKEN_SCHEMAS)
+def test_a_missing_or_broken_schema_fails_rather_than_skips(
+    tmp_path: Path, text: str | None, error: type[Exception], match: str | None
+) -> None:
+    path = tmp_path / "chat-response-v1.schema.json"
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    with pytest.raises(error, match=match):
+        load_validator(path)
+
+
+def synthetic_website(tmp_path: Path) -> Path:
+    """A stand-in website repository that holds the recorded originals, made from the copies."""
+    website = tmp_path / "website"
+    for entry in drift.read_record():
+        original = website / entry.original
+        original.parent.mkdir(parents=True, exist_ok=True)
+        original.write_bytes((CONTRACTS / entry.copy).read_bytes())
+    return website
+
+
+def test_the_drift_check_accepts_identical_originals(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    website = synthetic_website(tmp_path)
+    status, report = drift.compare(website)
+    assert status == drift.SAME, report
+    assert [line.split()[1] for line in report[:-1]] == [entry.copy for entry in drift.read_record()]
+    assert drift.main([str(website)]) == drift.SAME
+    assert "all 6 copies match their originals" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("change", "note"),
+    [
+        (lambda data: data.replace(b'"maxLength": 4000', b'"maxLength": 4001'), False),
+        (lambda data: data + b"\n", False),
+        (lambda data: data.replace(b"\n", b"\r\n"), True),
+    ],
+    ids=["one-character", "trailing-line-feed", "crlf-line-endings"],
+)
+def test_the_drift_check_reports_a_changed_original(tmp_path: Path, change: Callable[[bytes], bytes], note: bool) -> None:
+    website = synthetic_website(tmp_path)
+    original = website / "docs/api/schemas/chat-response-v1.schema.json"
+    original.write_bytes(change(original.read_bytes()))
+    status, report = drift.compare(website)
+    assert status == drift.DRIFT
+    drifted = [line for line in report if line.startswith("DRIFT")]
+    assert len(drifted) == 1 and "chat-response-v1.schema.json" in drifted[0]
+    assert ("only line endings differ" in drifted[0]) is note
+    assert drift.main([str(website)]) == drift.DRIFT
+
+
+def test_the_drift_check_reports_a_copy_changed_since_it_was_recorded(tmp_path: Path) -> None:
+    contracts = shutil.copytree(CONTRACTS, tmp_path / "contracts", ignore=shutil.ignore_patterns("__pycache__"))
+    (contracts / "examples" / "error.json").write_bytes(b"{}\n")
+    status, report = drift.compare(synthetic_website(tmp_path), contracts)
+    assert status == drift.DRIFT
+    assert sum(line.startswith("DRIFT   examples/error.json") for line in report) == 2  # the record and the original
+
+
+def test_the_drift_check_cannot_pass_without_its_files(tmp_path: Path) -> None:
+    assert drift.compare(tmp_path / "absent")[0] == drift.CANNOT_CHECK
+    website = synthetic_website(tmp_path)
+    (website / "docs/api/examples/request.json").unlink()
+    status, report = drift.compare(website)
+    assert status == drift.CANNOT_CHECK
+    assert any(line.startswith("MISSING examples/request.json") for line in report)
+    (tmp_path / "unrecorded").mkdir()
+    (tmp_path / "unrecorded" / "README.md").write_text("No record here.\n", encoding="utf-8")
+    assert drift.compare(website, tmp_path / "unrecorded")[0] == drift.CANNOT_CHECK
+
+
 @pytest.mark.parametrize(("name", "http_status"), [("answered.json", 200), ("navigation.json", 200), ("error.json", 503)])
 def test_the_contracts_examples_pass_the_schema_and_the_checks(name: str, http_status: int) -> None:
-    body = json.loads((EXAMPLES / name).read_text(encoding="utf-8"))
+    body = example(name)
     assert schema_errors(body) == []
     check_public_response(http_status, body)
 
 
-@needs_schema
+VALID_REQUESTS = [
+    pytest.param(example("request.json"), id="contract-example"),
+    pytest.param({"message": "x"}, id="one-character"),
+    pytest.param({"message": "a" * 1000}, id="at-the-bound"),
+    pytest.param({"message": "\U0001f642" * 1000}, id="bound-in-code-points"),  # 2000 UTF-16 code units
+    pytest.param({"message": "A synthetic first line.\n\tA synthetic second line."}, id="line-feed-and-tab"),
+    pytest.param({"message": "  take me to QMIND  "}, id="surrounding-spaces"),
+    # The schema leaves these to the runtime checks (chat-v1.md, section 6).
+    pytest.param({"message": "A synthetic \ud800 question?"}, id="unpaired-surrogate-is-a-runtime-check"),
+    pytest.param({"message": " ​ "}, id="format-character-only-is-a-runtime-check"),
+]
+INVALID_REQUESTS = [
+    pytest.param({}, id="missing-message"),
+    pytest.param({"message": ""}, id="empty"),
+    pytest.param({"message": "   "}, id="spaces-only"),
+    pytest.param({"message": "\n\t \r"}, id="whitespace-only"),
+    pytest.param({"message": "a" * 1001}, id="too-long"),
+    pytest.param({"message": "\U0001f642" * 1001}, id="too-long-in-code-points"),
+    pytest.param({"message": None}, id="null"),
+    pytest.param({"message": 42}, id="number"),
+    pytest.param({"message": ["A synthetic question?"]}, id="array"),
+    pytest.param({"message": "x", "history": []}, id="history-member"),
+    pytest.param({"message": "x", "model": TAG}, id="model-member"),
+    pytest.param({"message": "x", "request_id": REQUEST_ID}, id="request-id-member"),
+    pytest.param({"Message": "x"}, id="wrong-case-member"),
+    pytest.param(["A synthetic question?"], id="not-an-object"),
+    pytest.param(None, id="null-body"),
+]
+
+
+@pytest.mark.parametrize("request_body", VALID_REQUESTS)
+def test_the_request_schema_accepts_valid_requests(request_body: Any) -> None:
+    assert schema_errors(request_body, REQUEST_VALIDATOR) == []
+
+
+@pytest.mark.parametrize("request_body", INVALID_REQUESTS)
+def test_the_request_schema_rejects_invalid_requests(request_body: Any) -> None:
+    assert schema_errors(request_body, REQUEST_VALIDATOR) != []
+
+
+def test_the_request_schema_has_the_engines_input_limit(engine: ChatEngine) -> None:
+    assert REQUEST_SCHEMA["required"] == list(REQUEST_SCHEMA["properties"]) == ["message"]
+    assert REQUEST_SCHEMA["properties"]["message"]["maxLength"] == engine.chat_config.max_input_characters
+
+
 def test_the_public_constants_are_the_schemas() -> None:
-    assert SCHEMA is not None
     assert list(PUBLIC_FIELDS) == SCHEMA["required"] == list(SCHEMA["properties"])
     assert list(PUBLIC_STATUSES) == SCHEMA["properties"]["status"]["enum"]
     assert list(PUBLIC_ACTION_ROUTES) == SCHEMA["$defs"]["action_route_id"]["enum"]
@@ -286,9 +443,7 @@ def test_the_public_constants_are_the_schemas() -> None:
     assert SCHEMA["$defs"]["request_id"]["pattern"] == "^" + public_response_module._REQUEST_ID.pattern + "$"
 
 
-@needs_schema
 def test_the_character_rule_covers_the_schemas() -> None:
-    assert SCHEMA is not None
     rejected = re.compile(SCHEMA["$defs"]["display_text"]["not"]["pattern"])
     for code in range(0x10000):  # the schema's character class lies in the Basic Multilingual Plane
         if rejected.search(chr(code)):
@@ -1211,8 +1366,7 @@ def test_invalid_responses_are_refused(http_status: Any, candidate: dict[str, An
         check_public_response(http_status, candidate)
     with pytest.raises(ValueError):
         PublicResponse(http_status, candidate)
-    if SCHEMA is not None:
-        assert bool(schema_errors(candidate)) is schema_rejects
+    assert bool(schema_errors(candidate)) is schema_rejects
 
 
 VALID = [
@@ -1240,11 +1394,9 @@ VALID = [
 def test_valid_responses_are_accepted(http_status: int, candidate: dict[str, Any]) -> None:
     check_public_response(http_status, candidate)
     assert PublicResponse(http_status, candidate).to_dict() == candidate
-    if SCHEMA is not None:
-        assert schema_errors(candidate) == []
+    assert schema_errors(candidate) == []
 
 
-@needs_schema
 def test_the_checks_are_never_more_lenient_than_the_schema() -> None:
     rng = random.Random(2020)
     values: list[Any] = [

@@ -1,0 +1,12 @@
+{
+  "request_id": "8ad937cb-a4cf-4b53-bea9-f6cfbb38f06b",
+  "status": "answered",
+  "answer_text": "Sample answer: this text stands in for a validated reply built from approved facts about the site owner. It is plain text without links or formatting, and it is long enough to run past the thought cloud, so the cloud shows only its start and offers to continue on the mascot's page.",
+  "cloud_preview": "Sample answer: this text stands in for a validated reply built from approved facts about the site owner. It is plain text…",
+  "continuation": {
+    "route_id": "mascot_chat",
+    "reasons": ["exceeds_cloud"]
+  },
+  "actions": [],
+  "error": null
+}

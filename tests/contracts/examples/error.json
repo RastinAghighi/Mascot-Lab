@@ -1,0 +1,11 @@
+{
+  "request_id": "5938f1a1-5eac-487a-b628-b3d5d449c1be",
+  "status": "unavailable",
+  "answer_text": "Sorry, I can't answer right now. Please try again later.",
+  "cloud_preview": "Sorry, I can't answer right now. Please try again later.",
+  "continuation": null,
+  "actions": [],
+  "error": {
+    "code": "unavailable"
+  }
+}

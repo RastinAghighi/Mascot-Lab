@@ -1,0 +1,3 @@
+# The contract copies must stay byte-for-byte identical to their originals: README.md
+# records their SHA-256 values. Never convert their line endings on checkout or commit.
+*.json -text

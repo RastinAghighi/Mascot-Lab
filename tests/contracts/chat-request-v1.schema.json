@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rastinaghighi.dev chat API v1: request body (PROPOSED)",
+  "description": "Body of POST /api/chat/v1. PROPOSED and not owner-approved: see docs/api/chat-v1.md. The browser sends this body to the gateway, and the gateway sends a freshly serialized copy of the validated value to the inference origin. This schema defines structure only; the ordered validation steps, the Unicode rules and the error code for each failure are in chat-v1.md, section 6.",
+  "$comment": "Exactly one member is allowed. Every other member (for example history, messages, session_id, model, options, stream, request_id or client_request_id) is rejected with HTTP 400 and error code invalid_request.",
+  "type": "object",
+  "properties": {
+    "message": {
+      "description": "The visitor's question or navigation command, as plain text. Line feeds and tabs are allowed. Length is counted in Unicode code points as sent, not in UTF-16 code units. Unpaired surrogates are rejected by a runtime check, not by this schema (chat-v1.md, section 6). The origin also normalizes the message and applies the same limits again after normalization.",
+      "$comment": "minLength or pattern failure: error code empty_input. maxLength failure: input_too_long. Wrong type: invalid_request. 1000 is the inference application's PROVISIONAL input limit.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    }
+  },
+  "required": ["message"],
+  "additionalProperties": false
+}

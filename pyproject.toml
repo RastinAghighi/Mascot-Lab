@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # Standard JSON Schema Draft 2020-12 validation of the public chat API contract (tests/contracts/).
+    "jsonschema>=4.18",
 ]
 
 [tool.setuptools.packages.find]
