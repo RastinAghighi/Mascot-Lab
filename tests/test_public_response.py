@@ -1498,5 +1498,5 @@ def test_the_module_imports_nothing_that_could_serve_or_generate() -> None:
 def test_nothing_in_the_engine_or_the_command_line_uses_the_mapper() -> None:
     package = Path(public_response_module.__file__).parent
     for path in package.glob("*.py"):
-        if path.name != "public_response.py":
+        if path.name not in ("public_response.py", "local_origin.py"):  # the HTTP origin owns the integration
             assert "public_response" not in path.read_text(encoding="utf-8"), path.name
